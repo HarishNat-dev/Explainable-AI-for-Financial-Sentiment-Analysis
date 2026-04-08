@@ -1,0 +1,83 @@
+STATISTICAL SIGNIFICANCE TESTING (Welch's t-test)
+
+Note: Cohen's d effect size interpretation (rough): 0.2 small, 0.5 medium, 0.8 large.
+
+
+=== Fidelity Drop (P(orig_class) - P(masked)) ===
+
+Fidelity: positive vs neutral
+  n=55 vs 120
+  mean=0.8802 vs -0.0009
+  Welch t=21.0082, p=1.036e-27, Cohen's d=5.0536
+
+Fidelity: negative vs neutral
+  n=25 vs 120
+  mean=0.9285 vs -0.0009
+  Welch t=26.5504, p=2.288e-19, Cohen's d=12.6077
+
+Fidelity: positive vs negative
+  n=55 vs 25
+  mean=0.8802 vs 0.9285
+  Welch t=-0.8856, p=0.3787, Cohen's d=-0.1750
+
+
+=== Stability (No Punctuation) ===
+
+Stability_no_punct: positive vs neutral
+  n=55 vs 120
+  mean=0.6618 vs 0.5200
+  Welch t=4.9031, p=2.746e-06, Cohen's d=0.7315
+
+Stability_no_punct: negative vs neutral
+  n=25 vs 120
+  mean=0.5760 vs 0.5200
+  Welch t=1.4009, p=0.1691, Cohen's d=0.2776
+
+Stability_no_punct: positive vs negative
+  n=55 vs 25
+  mean=0.6618 vs 0.5760
+  Welch t=2.0668, p=0.04476, Cohen's d=0.5139
+
+
+=== Stability (No Stopwords) ===
+
+Stability_no_stopwords: positive vs neutral
+  n=55 vs 120
+  mean=0.4764 vs 0.3450
+  Welch t=4.6571, p=6.6e-06, Cohen's d=0.6286
+
+Stability_no_stopwords: negative vs neutral
+  n=25 vs 120
+  mean=0.4880 vs 0.3450
+  Welch t=3.3676, p=0.001627, Cohen's d=0.6302
+
+Stability_no_stopwords: positive vs negative
+  n=55 vs 25
+  mean=0.4764 vs 0.4880
+  Welch t=-0.2839, p=0.7781, Cohen's d=-0.0765
+
+
+=== IG vs SHAP Agreement (Top-k overlap) ===
+
+IG_SHAP_overlap: positive vs neutral
+  n=55 vs 120
+  mean=0.5295 vs 0.4427
+  Welch t=3.4946, p=0.0006244, Cohen's d=0.4929
+
+IG_SHAP_overlap: negative vs neutral
+  n=25 vs 120
+  mean=0.4950 vs 0.4427
+  Welch t=1.8414, p=0.07058, Cohen's d=0.2866
+
+IG_SHAP_overlap: positive vs negative
+  n=55 vs 25
+  mean=0.5295 vs 0.4950
+  Welch t=1.2225, p=0.2269, Cohen's d=0.2784
+
+
+=== Robustness Interaction: XAI Change (1 - overlap) ===
+
+XAI_change: no_flip vs flip
+  n=196 vs 4
+  mean=0.6051 vs 0.4000
+  Welch t=13.3105, p=3.518e-29, Cohen's d=0.9580

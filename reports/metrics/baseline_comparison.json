@@ -1,0 +1,32 @@
+{
+  "xgboost": {
+    "accuracy": 0.914706,
+    "precision_macro": 0.909701,
+    "recall_macro": 0.853313,
+    "f1_macro": 0.877958,
+    "precision_weighted": 0.913801,
+    "recall_weighted": 0.914706,
+    "f1_weighted": 0.912105,
+    "ece": 0.03112
+  },
+  "mlp_feedforward": {
+    "accuracy": 0.902941,
+    "precision_macro": 0.885799,
+    "recall_macro": 0.845903,
+    "f1_macro": 0.86396,
+    "precision_weighted": 0.900713,
+    "recall_weighted": 0.902941,
+    "f1_weighted": 0.900423,
+    "ece": 0.017648
+  },
+  "finbert": {
+    "accuracy": 0.985294,
+    "precision_macro": 0.973691,
+    "recall_macro": 0.975838,
+    "f1_macro": 0.974752,
+    "precision_weighted": 0.985396,
+    "recall_weighted": 0.985294,
+    "f1_weighted": 0.985333,
+    "ece": "see_note"
+  }
+}

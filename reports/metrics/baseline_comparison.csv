@@ -1,0 +1,4 @@
+model,accuracy,precision_macro,recall_macro,f1_macro,precision_weighted,recall_weighted,f1_weighted,ece
+xgboost,0.914706,0.909701,0.853313,0.877958,0.913801,0.914706,0.912105,0.03112
+mlp_feedforward,0.902941,0.885799,0.845903,0.86396,0.900713,0.902941,0.900423,0.017648
+finbert,0.985294,0.973691,0.975838,0.974752,0.985396,0.985294,0.985333,see_note
