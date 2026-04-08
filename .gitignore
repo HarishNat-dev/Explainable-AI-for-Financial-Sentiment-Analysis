@@ -1,0 +1,18 @@
+# Model files
+models/
+*.safetensors
+*.pt
+*.bin
+*.ckpt
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
