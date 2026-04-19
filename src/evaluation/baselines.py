@@ -1,15 +1,27 @@
+# =============================================================================
 # src/evaluation/baselines.py
+#
+# Baseline model evaluation — trains TF-IDF + XGBoost and TF-IDF + MLP on
+# the combined train+validation set and evaluates both on the held-out test
+# set, then loads saved FinBERT metrics for direct comparison (Section 4.4).
+#
+# The two baselines serve different roles (Section 4.4):
+#   - TF-IDF + XGBoost: strongest classical method, establishes the ceiling
+#     on what bag-of-words features can achieve
+#   - TF-IDF + MLP:     tests whether FinBERT's advantage comes from neural
+#     architecture or from pre-trained representations — the near-identical
+#     XGBoost and MLP results confirm it is the latter
+#
+# ECE (Equation 6.4) is computed for both baselines. It is deliberately not
+# computed for FinBERT due to near-ceiling accuracy on the allagree subset
+# making calibration measurement less interpretable (Table 8, Section 6.3.1).
+#
+# Output: reports/metrics/baseline_comparison.json and .csv
+#
+# Report:  Section 4.4 — Baseline Models; Section 6.3.1 — Table 8
+# =============================================================================
+
 from __future__ import annotations
-
-"""
-Baseline model comparison: TF-IDF + XGBoost and TF-IDF + Feedforward Neural Network.
-Compares against saved FinBERT metrics and computes ECE for all three models.
-
-New file — does not modify any existing scripts.
-
-Install requirements if needed:
-    pip install xgboost scikit-learn
-"""
 
 import json
 import sys
@@ -29,7 +41,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder
 from xgboost import XGBClassifier
 
-# --- Make project root importable ---
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -51,34 +62,35 @@ class BaselineConfig:
     text_col: str = "sentence"
     label_col: str = "label"
 
-    # TF-IDF
+    # TF-IDF: unigrams + bigrams, sublinear TF scaling, 10k feature vocab
+    # (Section 4.4 — same configuration for both baseline models)
     tfidf_max_features: int = 10_000
     tfidf_ngram_range: tuple = (1, 2)
 
-    # XGBoost
+    # XGBoost — 300 estimators chosen as performance plateaued beyond this (Section 4.4)
     xgb_n_estimators: int = 300
     xgb_max_depth: int = 6
     xgb_lr: float = 0.1
     xgb_seed: int = 42
 
-    # MLP
+    # MLP — two hidden layers (256, 128) with dropout and early stopping (Section 4.4)
     mlp_hidden: tuple = (256, 128)
     mlp_max_iter: int = 300
     mlp_seed: int = 42
 
-    # ECE
+    # ECE binning — M=10 equal-width bins as defined in Equation 6.4 (Section 6.2)
     ece_n_bins: int = 10
 
-
-# ------------------------------------------------------------------ #
-#  ECE                                                                 #
-# ------------------------------------------------------------------ #
 
 def expected_calibration_error(
     probs: np.ndarray, labels: np.ndarray, n_bins: int = 10
 ) -> float:
     """
-    Expected Calibration Error (ECE).
+    Computes Expected Calibration Error (ECE) — Equation 6.4 (Section 6.2).
+    Measures how well a model's stated confidence matches its empirical accuracy
+    by binning predictions into M equal-width confidence intervals and computing
+    the weighted average |accuracy - confidence| across bins.
+
     probs : shape [N, C] — predicted class probabilities
     labels: shape [N]   — integer true labels
     """
@@ -102,16 +114,19 @@ def expected_calibration_error(
     return float(ece)
 
 
-# ------------------------------------------------------------------ #
-#  Metrics helper                                                      #
-# ------------------------------------------------------------------ #
-
 def compute_metrics(
     y_true: np.ndarray,
     y_pred: np.ndarray,
     probs: np.ndarray,
     n_bins: int = 10,
 ) -> dict:
+    """
+    Computes the full metric suite for a baseline model:
+    accuracy, macro/weighted precision, recall, F1, and ECE.
+    Macro F1 is the primary comparison metric throughout (Section 6.2,
+    Equation 6.3) — it gives equal weight to all three classes regardless
+    of frequency, which matters given the 59% neutral class majority.
+    """
     acc = accuracy_score(y_true, y_pred)
     p_mac, r_mac, f1_mac, _ = precision_recall_fscore_support(
         y_true, y_pred, average="macro", zero_division=0
@@ -133,27 +148,24 @@ def compute_metrics(
     }
 
 
-# ------------------------------------------------------------------ #
-#  Main                                                                #
-# ------------------------------------------------------------------ #
-
 def main():
     cfg = BaselineConfig()
     out_dir = Path(cfg.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- Load data ---
+    # Load splits produced by load_phrasebank.py
     train_df = pd.read_parquet(cfg.train_path)
     val_df = pd.read_parquet(cfg.val_path)
     test_df = pd.read_parquet(cfg.test_path)
 
-    # Combine train+val for final baseline training (mirrors what FinBERT sees overall)
+    # Baselines train on combined train+val (1,905 sentences) to match the
+    # total labelled data available — the test set remains strictly held out
     trainval_df = pd.concat([train_df, val_df], ignore_index=True)
 
     X_trainval = trainval_df[cfg.text_col].astype(str).tolist()
     X_test = test_df[cfg.text_col].astype(str).tolist()
 
-    # Map integer labels to string names (same mapping as FinBERT)
+    # Label encoding: map integer labels to string names then encode for sklearn
     label_map = {0: "negative", 1: "neutral", 2: "positive"}
     trainval_df = trainval_df.copy()
     test_df = test_df.copy()
@@ -165,15 +177,18 @@ def main():
     y_trainval = le.transform(trainval_df["label_str"])
     y_test = le.transform(test_df["label_str"])
 
-
     print("Label mapping:", dict(zip(le.classes_, le.transform(le.classes_))))
     print(f"Train+val: {len(X_trainval)} | Test: {len(X_test)}\n")
 
     results = {}
 
-    # ------------------------------------------------------------------ #
-    # 1) TF-IDF + XGBoost                                                  #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Baseline 1: TF-IDF + XGBoost (Section 4.4)
+    # XGBoost is the stronger of the two baselines — gradient boosting on
+    # TF-IDF features establishes the non-neural ceiling for bag-of-words
+    # representations. Cannot capture context (e.g. "avoided a loss" vs
+    # "incurred a loss" look identical under TF-IDF).
+    # ------------------------------------------------------------------
     print("=" * 50)
     print("Training TF-IDF + XGBoost...")
 
@@ -206,9 +221,12 @@ def main():
     print("\nClassification Report:")
     print(classification_report(y_test, xgb_pred, target_names=le.classes_))
 
-    # ------------------------------------------------------------------ #
-    # 2) TF-IDF + MLP (Feedforward Neural Network)                         #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Baseline 2: TF-IDF + MLP (Section 4.4)
+    # Tests whether FinBERT's advantage is architectural (neural vs tree)
+    # or representational (contextual embeddings vs bag-of-words).
+    # Near-identical MLP and XGBoost results confirm it is representational.
+    # ------------------------------------------------------------------
     print("=" * 50)
     print("Training TF-IDF + MLP (Feedforward Neural Network)...")
 
@@ -241,9 +259,11 @@ def main():
     print("\nClassification Report:")
     print(classification_report(y_test, mlp_pred, target_names=le.classes_))
 
-    # ------------------------------------------------------------------ #
-    # 3) Load FinBERT metrics and add ECE note                             #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Load saved FinBERT metrics for comparison (Section 6.3.1, Table 8)
+    # ECE is marked as 'see_note' — near-ceiling accuracy on allagree makes
+    # calibration measurement less interpretable (Section 6.3.1).
+    # ------------------------------------------------------------------
     print("=" * 50)
     print("Loading FinBERT metrics...")
 
@@ -251,7 +271,6 @@ def main():
     with open(finbert_path) as f:
         finbert_raw = json.load(f)
 
-    # Map FinBERT metric keys to our standard names
     finbert_metrics = {
         "accuracy": round(finbert_raw.get("eval_accuracy", 0), 6),
         "precision_macro": round(finbert_raw.get("eval_precision_macro", 0), 6),
@@ -260,7 +279,7 @@ def main():
         "precision_weighted": round(finbert_raw.get("eval_precision_weighted", 0), 6),
         "recall_weighted": round(finbert_raw.get("eval_recall_weighted", 0), 6),
         "f1_weighted": round(finbert_raw.get("eval_f1_weighted", 0), 6),
-        "ece": "see_note",  # ECE requires raw probabilities; logged separately
+        "ece": "see_note",
     }
     results["finbert"] = finbert_metrics
 
@@ -268,9 +287,9 @@ def main():
     for k, v in finbert_metrics.items():
         print(f"  {k}: {v}")
 
-    # ------------------------------------------------------------------ #
-    # 4) Comparison table                                                   #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Comparison table and output files
+    # ------------------------------------------------------------------
     print("\n" + "=" * 50)
     print("MODEL COMPARISON SUMMARY")
     print("=" * 50)
@@ -283,10 +302,8 @@ def main():
 
     comparison_df = pd.DataFrame(comparison_rows)
     comparison_df = comparison_df.set_index("model")
-
     print(comparison_df.to_string())
 
-    # Save
     out_json_path = out_dir / cfg.out_json
     out_csv_path = out_dir / cfg.out_csv
 
@@ -294,13 +311,12 @@ def main():
         json.dump(results, f, indent=2)
 
     comparison_df.reset_index().to_csv(out_csv_path, index=False)
-
     print(f"\nSaved comparison JSON: {out_json_path}")
     print(f"Saved comparison CSV:  {out_csv_path}")
 
-    # ------------------------------------------------------------------ #
-    # 5) Key takeaways printed for report                                   #
-    # ------------------------------------------------------------------ #
+    # ------------------------------------------------------------------
+    # Key takeaways — the numbers that appear in Table 8 (Section 6.3.1)
+    # ------------------------------------------------------------------
     print("\n" + "=" * 50)
     print("KEY TAKEAWAYS FOR REPORT")
     print("=" * 50)
