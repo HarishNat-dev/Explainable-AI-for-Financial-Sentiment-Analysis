@@ -1,3 +1,27 @@
+# =============================================================================
+# src/xai/shap_explainer.py
+#
+# SHAP explainer for fine-tuned FinBERT using the partition algorithm
+# with a tokeniser-aware masker (Section 4.5.2, Equation 2.1).
+#
+# The partition algorithm approximates Shapley values by sampling token
+# coalitions hierarchically, keeping model evaluations to max_evals rather
+# than the exponential full computation (Section 4.5.2).
+#
+# Tokeniser-aware masker: replaces absent tokens with [MASK] rather than
+# blank strings, preserving sequence length and positional encodings so
+# model outputs are comparable across coalitions (Section 4.5.2).
+#
+# max_evals=300 for evaluation scripts; 250 for real-time Streamlit use
+# (8-15s on CPU at either setting).
+#
+# The unified explain() interface matches ig_explainer.py exactly so the
+# Streamlit tabs and evaluation scripts can consume both without branching
+# logic (Section 3.6.4, Section 4.5).
+#
+# Report: Section 4.5.2, Section 2.3.2 (Equation 2.1), Section 4.7.3
+# =============================================================================
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,13 +38,13 @@ LABEL_MAP = {0: "negative", 1: "neutral", 2: "positive"}
 
 @dataclass(frozen=True)
 class SHAPConfig:
-    model_dir: str = "models/finbert/finbert_phrasebank_allagree/best_model"
+    model_dir: str  = "models/finbert/finbert_phrasebank_allagree/best_model"
     max_length: int = 128
-    # Controls SHAP runtime. Increase for smoother explanations; decrease for speed.
-    max_evals: int = 300
+    max_evals: int  = 300
 
 
 def _normalize_attributions(attrs: np.ndarray) -> np.ndarray:
+    """Normalise SHAP values to [-1, 1] — same as IG for consistent visualisation."""
     if np.allclose(attrs, 0):
         return attrs
     max_abs = np.max(np.abs(attrs))
@@ -29,8 +53,9 @@ def _normalize_attributions(attrs: np.ndarray) -> np.ndarray:
 
 def tokens_to_html(tokens: List[str], scores: List[float]) -> str:
     """
-    Green = supports target class (positive SHAP value)
-    Red   = opposes target class (negative SHAP value)
+    Renders colour-coded SHAP token attribution HTML for the Streamlit SHAP tab
+    (Section 4.7.3). Identical colour scheme to ig_explainer.py for direct
+    side-by-side comparison. Green = supports target class; red = opposes.
     """
     def style(score: float) -> str:
         s = max(-1.0, min(1.0, float(score)))
@@ -42,13 +67,12 @@ def tokens_to_html(tokens: List[str], scores: List[float]) -> str:
 
     rendered = []
     for tok, sc in zip(tokens, scores):
-        clean = str(tok)
         rendered.append(
             "<span style='"
             + style(sc)
             + " padding:2px 4px; margin:1px; border-radius:6px; display:inline-block;'"
             + f" title='{sc:.3f}'>"
-            + clean
+            + str(tok)
             + "</span>"
         )
     return "<div style='line-height: 2.2; font-size: 16px;'>" + " ".join(rendered) + "</div>"
@@ -56,8 +80,10 @@ def tokens_to_html(tokens: List[str], scores: List[float]) -> str:
 
 class FinBERTSHAPExplainer:
     """
-    SHAP text explainer using a token-aware masker driven by the tokenizer.
-    Works for multiclass by selecting a target class (default: predicted class).
+    SHAP text explainer using a tokeniser-aware masker and partition algorithm.
+    Loaded once at startup via @st.cache_resource (Section 4.7.5).
+    Also used by agreement_ig_shap.py for cross-method agreement evaluation.
+    The explainer is built once in __init__ and reused across all explain() calls.
     """
 
     def __init__(self, cfg: SHAPConfig):
@@ -71,78 +97,63 @@ class FinBERTSHAPExplainer:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model.to(self.device)
 
-        # SHAP masker uses the tokenizer to create meaningful masks
+        # Tokeniser-aware masker — replaces absent tokens with [MASK] to preserve
+        # sequence length and positional encodings (Section 4.5.2)
         self.masker = shap.maskers.Text(self.tokenizer)
 
-        # Build an explainer once (expensive) and reuse it
         self.explainer = shap.Explainer(
             self._predict_proba_np,
             self.masker,
-            algorithm="partition",  # fewer model calls than kernel for text
+            algorithm="partition",
             output_names=[LABEL_MAP[i] for i in range(3)],
         )
 
     @torch.no_grad()
     def _predict_proba(self, texts: List[str]) -> np.ndarray:
-        enc = self.tokenizer(
-            texts,
-            truncation=True,
-            max_length=self.cfg.max_length,
-            return_tensors="pt",
-            padding=True,
-        )
-        enc = {k: v.to(self.device) for k, v in enc.items()}
+        """Batched forward pass returning softmax probabilities as numpy array [N, 3]."""
+        enc    = self.tokenizer(texts, truncation=True, max_length=self.cfg.max_length,
+                                return_tensors="pt", padding=True)
+        enc    = {k: v.to(self.device) for k, v in enc.items()}
         logits = self.model(**enc).logits
-        probs = torch.softmax(logits, dim=-1)
+        probs  = torch.softmax(logits, dim=-1)
         return probs.detach().cpu().numpy()
 
     def _predict_proba_np(self, texts) -> np.ndarray:
         """
-        SHAP may pass:
-          - list[str]
-          - numpy array of strings
-          - list of token lists (pretokenized)
-          - nested arrays
-        We normalize everything to List[str].
+        Normalises SHAP's various input formats (numpy arrays, token lists, strings)
+        to List[str] before calling _predict_proba (Section 4.5.2).
         """
-        # Convert numpy -> python list
         if isinstance(texts, np.ndarray):
             texts = texts.tolist()
-
-        # Ensure list
         if not isinstance(texts, list):
             texts = [texts]
 
         cleaned: List[str] = []
         for t in texts:
-            # If SHAP gives a token list, join tokens into a string
             if isinstance(t, list):
-                # For typical token lists, join without spaces (masker returns tokens including spaces)
-                if all(isinstance(x, str) for x in t):
-                    cleaned.append("".join(t))
-                else:
-                    cleaned.append(str(t))
+                cleaned.append("".join(t) if all(isinstance(x, str) for x in t) else str(t))
             else:
                 cleaned.append(str(t))
-
         return self._predict_proba(cleaned)
 
     def explain(self, text: str, target_label: int | None = None) -> Dict:
-        # Prediction
-        probs = self._predict_proba([text])[0]
+        """
+        Computes SHAP token attributions for the given text (Section 4.5.2).
+        exp.values shape is (1, num_tokens, num_classes) — extracts the slice
+        for target_label. Returns the standard explanation dict matching
+        ig_explainer.py: tokens, attributions, html, predicted{}, target_explained{}
+        """
+        probs   = self._predict_proba([text])[0]
         pred_id = int(probs.argmax())
         if target_label is None:
             target_label = pred_id
 
-        # SHAP explanation
-        # For multiclass: exp.values shape is (1, num_tokens, num_classes)
-        exp = self.explainer([text], max_evals=self.cfg.max_evals)
-
-        tokens = list(exp.data[0])  # token strings from the masker
-        values = exp.values[0, :, int(target_label)]  # SHAP values for chosen class
+        exp    = self.explainer([text], max_evals=self.cfg.max_evals)
+        tokens = list(exp.data[0])
+        values = exp.values[0, :, int(target_label)]
 
         values_norm = _normalize_attributions(np.array(values)).tolist()
-        html = tokens_to_html(tokens, values_norm)
+        html        = tokens_to_html(tokens, values_norm)
 
         return {
             "text": text,
@@ -151,7 +162,7 @@ class FinBERTSHAPExplainer:
                 "label": LABEL_MAP[pred_id],
                 "probabilities": {
                     "negative": float(probs[0]),
-                    "neutral": float(probs[1]),
+                    "neutral":  float(probs[1]),
                     "positive": float(probs[2]),
                 },
                 "confidence": float(probs[pred_id]),
@@ -160,17 +171,18 @@ class FinBERTSHAPExplainer:
                 "label_id": int(target_label),
                 "label": LABEL_MAP[int(target_label)],
             },
-            "tokens": tokens,
+            "tokens":       tokens,
             "attributions": values_norm,
-            "html": html,
+            "html":         html,
         }
 
 
 if __name__ == "__main__":
-    explainer = FinBERTSHAPExplainer(SHAPConfig(max_evals=250))
-    sample = "Company shares rise after strong earnings report."
-    out = explainer.explain(sample)
+    explainer    = FinBERTSHAPExplainer(SHAPConfig(max_evals=250))
+    sample       = "Company shares rise after strong earnings report."
+    out          = explainer.explain(sample)
     print("Predicted:", out["predicted"])
-    pairs = list(zip(out["tokens"], out["attributions"]))
+    pairs        = list(zip(out["tokens"], out["attributions"]))
     pairs_sorted = sorted(pairs, key=lambda x: abs(x[1]), reverse=True)[:10]
     print("Top tokens by |SHAP|:", pairs_sorted)
+    
